@@ -1,0 +1,271 @@
+﻿'-------------------------------------------
+' Name:
+' 
+'-------------------------------------------
+' Purpose:
+' 
+'-------------------------------------------
+' Parameters:
+' None
+'-------------------------------------------
+' Returns:
+' 
+'-------------------------------------------
+' Special features:
+'
+'-------------------------------------------
+
+---------------------------------------------
+-- Name:
+-- 
+---------------------------------------------
+-- Purpose:
+-- 
+---------------------------------------------
+-- Parameters:
+-- None
+---------------------------------------------
+-- Returns:
+-- 
+---------------------------------------------
+-- Special features:
+--
+---------------------------------------------
+
+//---------------------------------------------------------
+// Name:
+// 
+//---------------------------------------------------------
+// Purpose:
+// 
+//---------------------------------------------------------
+// Parameters:
+// err - Exception handler
+//---------------------------------------------------------
+// Returns:
+// true if success
+// false on failure
+//---------------------------------------------------------
+// Special features:
+// performs longjump in case of error
+//---------------------------------------------------------
+int name(FDMC_EXCEPTION *err)
+{
+	FUNC_NAME("");
+	FDMC_EXCEPTION x;
+
+	dbg_trace();
+
+	TRYF(x)
+	{
+	}
+	EXCEPTION
+	{
+		fdmc_raiseup(&x, err);
+		return 0;
+	}
+	return 1;
+}
+
+FDMC_THREAD_TYPE __thread_call name(void*)
+
+This is template for typical process
+//---------------------------------------------------------
+// Name:
+// _thread
+//---------------------------------------------------------
+// Purpose:
+// 
+//---------------------------------------------------------
+// Parameters:
+// err - Exception handler
+//---------------------------------------------------------
+// Returns:
+// true if success
+// false on failure
+//---------------------------------------------------------
+// Special features:
+// performs longjump in case of error
+//---------------------------------------------------------
+FDMC_THREAD_TYPE __thread_call _thread(void *p_par)
+{
+	FUNC_NAME("_thread");
+	FDMC_EXCEPTION x;
+	int i, n;
+	FDMC_PROCESS *v_proc = (FDMC_PROCESS*)p_par;
+
+	TRYF(x)
+	{
+		v_proc->wait_sec = 6;
+		v_proc->device_event = fdmc_device_events;
+		v_proc->handler_event = card5p_handler_events;
+		v_proc->handler_proc = fdmc_handler_thread;
+		v_proc->event_handler = NULL;
+		env = getenv("COM5_THREADS");
+		if(!env) 
+			n = 5;
+		else
+		{
+			n = atoi(env);
+			if(!n) n = 5;
+		}
+		for(i = 1; i <= n; i++)
+		{
+			FDMC_HANDLER *p_hndl = fdmc_handler_create(v_proc, &x);
+			p_hndl->permanent = 1;
+			fdmc_handler_push(p_hndl, &x);
+		}
+		card5_create_links(v_proc, &x);
+		for(;;)
+		{
+			func_trace("Waiting for controls");
+			if(fdmc_sock_ready(v_proc->sockpair.my_mail, 1000, 0) && v_proc->event_handler)
+			{
+				int r = (*v_proc->event_handler)(v_proc, FDMC_DEV_EVCTRL);
+				if(r == EOF)
+				{
+					break;
+				}
+			}
+		}
+	}
+	EXCEPTION
+	{
+		return 0;
+	}
+}
+
+//*****************************************************************
+//      This is template for typical card5 main function
+//*****************************************************************
+FDMC_SQL_SESSION *_db;
+
+int _connect_db(FDMC_EXCEPTION *err)
+{
+	FUNC_NAME("_connect_db");
+	FDMC_EXCEPTION x;
+
+	dbg_trace();
+
+	TRYF(x)
+	{
+		_db = fdmc_sql_session_create("fcard", "fcard", TNSNAME, &x);
+		time_trace("sql_session created");
+	}
+	EXCEPTION
+	{
+		fdmc_raiseup(&x, err);
+		return 0;
+	}
+	return 1;
+}
+
+int main(int argc, char *argv[])
+{
+	FUNC_NAME("main");
+	FDMC_EXCEPTION x;
+	FDMC_PROCESS *v_proct;
+
+	TRYF(x)
+	{
+#ifdef _UNIX_
+		signal(SIGHUP, SIG_IGN);
+		setpgrp();
+#endif
+		fdmc_init_ip();
+		fdmc_thread_init("_main", 1);
+		debug_formats = 1;
+		// Create and start main thread
+		_connect_db(&x);
+		v_proct = card5_process_create("card5", _thread, _db, &x);
+		v_proct->event_handler = _process_events;
+		fdmc_process_start(v_proct);
+		// Sleep and display runtime information
+		fdmc_runtime_display("Application");
+	}
+	EXCEPTION
+	{
+		trace("%s", x.errortext);
+		return 0;
+	}
+	return 1;
+}
+
+//---------------------------------------------------------
+// Name:
+// _handler_events
+//---------------------------------------------------------
+// Purpose:
+// 
+//---------------------------------------------------------
+// Parameters:
+// p_hndl - Application algorythm handler
+// p_ev - event id
+//---------------------------------------------------------
+// Returns:
+// true if success
+// false on failure
+//---------------------------------------------------------
+// Special features:
+// performs longjump in case of error
+//---------------------------------------------------------
+int _handler_events(FDMC_HANDLER *p_hndl, FDMC_DEV_EVENT p_ev)
+{
+	FUNC_NAME("fdmc_handler_events");
+	FDMC_EXCEPTION x;
+	FDMC_DEVICE *dev_new;
+
+	TRYF(x)
+	{
+		tprintf("-- event start: "); fdmc_trace_time();
+		switch(p_ev)
+		{
+		case FDMC_DEV_EVCREATE:  // Invoked when handler function starts
+			// Create oracle session
+			p_hndl->db_session = fdmc_sql_session_create("fcard", "fcard", TNSNAME, &x);
+			break;
+		case FDMC_DEV_EVSHUTDOWN: // Invoked at the end of handler function before it terminates
+			// Shutdown oracle session
+			fdmc_sql_session_close(p_hndl->db_session, &x);
+			break;
+		case FDMC_DEV_EVDATA: // Invoked when handler receive data from device
+			// Check now device event
+			switch(p_hndl->dev_copy.dev_event)
+			{
+			case FDMC_DEV_EVLISTEN: 
+				// Device is listener(parent) device and it succesfully bind port
+				screen_time_trace( "Listener created for device %s", p_hndl->dev_copy.name);
+				break;
+			case FDMC_DEV_EVCONNECTED: 
+				// Initiator process connected
+				screen_time_trace("connected to %s, port %d", p_hndl->dev_copy.ip_addr, p_hndl->dev_copy.ip_port);
+				break;
+			case FDMC_DEV_EVDISCONNECT:
+				// Initiator lost connection
+				screen_time_trace("initiator lost connection from %s, port %d", p_hndl->dev_copy.ip_addr, p_hndl->dev_copy.ip_port);
+				break;
+			case FDMC_DEV_EVCHILDLOST: 
+				// Child process lost connection with peer
+				screen_time_trace("lost connection with device %s", p_hndl->dev_copy.name);
+				break;
+			case FDMC_DEV_EVACCEPT:
+				// Accepted connection from peer
+				screen_time_trace("Accepted connection with '%s' ('%s')", p_hndl->dev_copy.name, p_hndl->dev_copy.ip_addr);
+				dev_new = fdmc_device_create(p_hndl->dev_copy.name, p_hndl->process, p_hndl->dev_copy.header_size, 
+					"card5px", 0, NULL,
+					0, 0, 0, &x);
+				break;
+			case FDMC_DEV_EVDATA: 
+				// Received data from socket
+				break;
+			}
+		}
+	}
+	EXCEPTION
+	{
+		func_trace("%s", x.errortext);
+		return 0;
+	}
+	tprintf("-- exiting event handler: "); fdmc_trace_time();
+	return 1;
+}
